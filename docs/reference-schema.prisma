@@ -1,0 +1,582 @@
+// Doraha Eats — database schema
+// All money values are INTEGER PAISE. Never floats.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  CUSTOMER
+  VENDOR
+  DELIVERY
+  ADMIN
+}
+
+enum AccountStatus {
+  PENDING
+  ACTIVE
+  SUSPENDED
+  REJECTED
+}
+
+enum OrderStatus {
+  PLACED
+  ACCEPTED
+  PREPARING
+  READY
+  ASSIGNED
+  PICKED_UP
+  ON_THE_WAY
+  DELIVERED
+  CANCELLED
+}
+
+enum PaymentMethod {
+  COD
+  UPI
+}
+
+enum PaymentStatus {
+  PENDING
+  AWAITING_VERIFICATION
+  PAID
+  FAILED
+  REFUNDED
+}
+
+enum AssignmentState {
+  OFFERED
+  ACCEPTED
+  DECLINED
+  EXPIRED
+  COMPLETED
+}
+
+enum ComplaintStatus {
+  OPEN
+  IN_PROGRESS
+  RESOLVED
+  REJECTED
+}
+
+model User {
+  id           String        @id @default(uuid())
+  role         Role
+  email        String?       @unique
+  phone        String?       @unique
+  passwordHash String?
+  fullName     String
+  avatarUrl    String?
+  locale       String        @default("en")
+  status       AccountStatus @default(ACTIVE)
+  lastLoginAt  DateTime?
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+
+  customerProfile CustomerProfile?
+  vendor          Vendor?
+  deliveryPartner DeliveryPartner?
+  addresses       Address[]
+  cart            Cart?
+  orders          Order[]          @relation("CustomerOrders")
+  reviews         Review[]
+  favorites       Favorite[]
+  notifications   Notification[]
+  complaints      Complaint[]      @relation("ComplaintAuthor")
+  handledComplaints Complaint[]    @relation("ComplaintHandler")
+  statusEvents    OrderStatusEvent[]
+  deviceTokens    DeviceToken[]
+  otpCodes        OtpCode[]
+
+  @@index([role, status])
+}
+
+model CustomerProfile {
+  id             String   @id @default(uuid())
+  userId         String   @unique
+  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  defaultZoneId  String?
+  defaultZone    DeliveryZone? @relation(fields: [defaultZoneId], references: [id])
+  totalOrders    Int      @default(0)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+}
+
+model DeviceToken {
+  id        String   @id @default(uuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  token     String   @unique
+  platform  String
+  createdAt DateTime @default(now())
+}
+
+model OtpCode {
+  id        String   @id @default(uuid())
+  userId    String?
+  user      User?    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  phone     String
+  codeHash  String
+  expiresAt DateTime
+  attempts  Int      @default(0)
+  consumed  Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  @@index([phone, expiresAt])
+}
+
+model DeliveryZone {
+  id               String   @id @default(uuid())
+  name             String
+  description      String?
+  city             String   @default("Doraha")
+  district         String   @default("Ludhiana")
+  state            String   @default("Punjab")
+  country          String   @default("India")
+  latitude         Float
+  longitude        Float
+  radiusMeters     Int
+  deliveryFeePaise Int
+  minOrderPaise    Int      @default(0)
+  etaMinutes       Int      @default(35)
+  priority         Int      @default(0)
+  isActive         Boolean  @default(false)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  vendors   Vendor[]
+  addresses Address[]
+  orders    Order[]
+  customers CustomerProfile[]
+
+  @@index([isActive])
+}
+
+model Address {
+  id        String        @id @default(uuid())
+  userId    String
+  user      User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  label     String        @default("HOME")
+  area      String
+  line1     String
+  landmark  String?
+  pincode   String?
+  latitude  Float
+  longitude Float
+  zoneId    String?
+  zone      DeliveryZone? @relation(fields: [zoneId], references: [id])
+  isDefault Boolean       @default(false)
+  createdAt DateTime      @default(now())
+  updatedAt DateTime      @updatedAt
+
+  orders Order[]
+
+  @@index([userId])
+}
+
+model Category {
+  id        String   @id @default(uuid())
+  slug      String   @unique
+  name      String
+  nameHi    String?
+  namePa    String?
+  icon      String?
+  sortOrder Int      @default(0)
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  foodItems FoodItem[]
+  vendors   VendorCategory[]
+}
+
+model Vendor {
+  id               String        @id @default(uuid())
+  ownerUserId      String        @unique
+  owner            User          @relation(fields: [ownerUserId], references: [id], onDelete: Cascade)
+  zoneId           String
+  zone             DeliveryZone  @relation(fields: [zoneId], references: [id])
+  name             String
+  slug             String        @unique
+  ownerName        String
+  phone            String
+  about            String?
+  addressLine      String
+  latitude         Float
+  longitude        Float
+  logoUrl          String?
+  coverUrl         String?
+  prepTimeMinutes  Int           @default(20)
+  commissionPct    Float?
+  status           AccountStatus @default(PENDING)
+  isOpenManual     Boolean       @default(true)
+  isDemo           Boolean       @default(false)
+  ratingAvg        Float         @default(0)
+  ratingCount      Int           @default(0)
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
+
+  categories VendorCategory[]
+  hours      VendorHour[]
+  sections   MenuSection[]
+  foodItems  FoodItem[]
+  orders     Order[]
+  reviews    Review[]
+  favorites  Favorite[]
+
+  @@index([zoneId, status])
+}
+
+model VendorCategory {
+  vendorId   String
+  vendor     Vendor   @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  categoryId String
+  category   Category @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+
+  @@id([vendorId, categoryId])
+}
+
+model VendorHour {
+  id        String @id @default(uuid())
+  vendorId  String
+  vendor    Vendor @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  dayOfWeek Int
+  opensAt   String // "09:00"
+  closesAt  String // "23:00"
+
+  @@index([vendorId])
+}
+
+model MenuSection {
+  id        String   @id @default(uuid())
+  vendorId  String
+  vendor    Vendor   @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  name      String
+  sortOrder Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  foodItems FoodItem[]
+}
+
+model FoodItem {
+  id              String       @id @default(uuid())
+  vendorId        String
+  vendor          Vendor       @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  sectionId       String?
+  section         MenuSection? @relation(fields: [sectionId], references: [id], onDelete: SetNull)
+  categoryId      String?
+  category        Category?    @relation(fields: [categoryId], references: [id])
+  name            String
+  description     String?
+  pricePaise      Int
+  imageUrl        String?
+  isVeg           Boolean      @default(true)
+  prepTimeMinutes Int?
+  isAvailable     Boolean      @default(true)
+  sortOrder       Int          @default(0)
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+
+  customizationGroups FoodCustomizationGroup[]
+  cartItems           CartItem[]
+  orderItems          OrderItem[]
+  favorites           Favorite[]
+
+  @@index([vendorId, isAvailable])
+  @@index([categoryId])
+}
+
+model FoodCustomizationGroup {
+  id         String   @id @default(uuid())
+  foodItemId String
+  foodItem   FoodItem @relation(fields: [foodItemId], references: [id], onDelete: Cascade)
+  name       String
+  minSelect  Int      @default(0)
+  maxSelect  Int      @default(1)
+  sortOrder  Int      @default(0)
+
+  options FoodCustomizationOption[]
+
+  @@index([foodItemId])
+}
+
+model FoodCustomizationOption {
+  id              String                 @id @default(uuid())
+  groupId         String
+  group           FoodCustomizationGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  name            String
+  priceDeltaPaise Int                    @default(0)
+  isAvailable     Boolean                @default(true)
+  isDefault       Boolean                @default(false)
+  sortOrder       Int                    @default(0)
+
+  cartItemOptions CartItemOption[]
+}
+
+model Cart {
+  id        String   @id @default(uuid())
+  userId    String   @unique
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  vendorId  String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  items CartItem[]
+}
+
+model CartItem {
+  id           String   @id @default(uuid())
+  cartId       String
+  cart         Cart     @relation(fields: [cartId], references: [id], onDelete: Cascade)
+  foodItemId   String
+  foodItem     FoodItem @relation(fields: [foodItemId], references: [id], onDelete: Cascade)
+  quantity     Int
+  instructions String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  options CartItemOption[]
+
+  @@index([cartId])
+}
+
+model CartItemOption {
+  id         String                  @id @default(uuid())
+  cartItemId String
+  cartItem   CartItem                @relation(fields: [cartItemId], references: [id], onDelete: Cascade)
+  optionId   String
+  option     FoodCustomizationOption @relation(fields: [optionId], references: [id], onDelete: Cascade)
+
+  @@unique([cartItemId, optionId])
+}
+
+model Order {
+  id         String       @id @default(uuid())
+  code       String       @unique
+  customerId String
+  customer   User         @relation("CustomerOrders", fields: [customerId], references: [id])
+  vendorId   String
+  vendor     Vendor       @relation(fields: [vendorId], references: [id])
+  zoneId     String
+  zone       DeliveryZone @relation(fields: [zoneId], references: [id])
+  addressId  String?
+  address    Address?     @relation(fields: [addressId], references: [id])
+  status     OrderStatus  @default(PLACED)
+
+  // frozen delivery target
+  addressLine     String
+  addressArea     String
+  addressLandmark String?
+  addressLatitude Float
+  addressLongitude Float
+  contactPhone    String
+
+  // frozen money
+  subtotalPaise    Int
+  deliveryFeePaise Int
+  platformFeePaise Int @default(0)
+  taxPaise         Int @default(0)
+  discountPaise    Int @default(0)
+  totalPaise       Int
+  commissionPaise  Int @default(0)
+
+  paymentMethod PaymentMethod
+  paymentStatus PaymentStatus @default(PENDING)
+  etaMinutes    Int
+  cookingNote   String?
+  cancelReason  String?
+  cancelledById String?
+
+  placedAt    DateTime  @default(now())
+  acceptedAt  DateTime?
+  readyAt     DateTime?
+  deliveredAt DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  items       OrderItem[]
+  events      OrderStatusEvent[]
+  payment     Payment?
+  assignments DeliveryAssignment[]
+  review      Review?
+  complaints  Complaint[]
+
+  @@index([customerId, placedAt])
+  @@index([vendorId, status])
+  @@index([zoneId, placedAt])
+  @@index([status])
+}
+
+model OrderItem {
+  id             String    @id @default(uuid())
+  orderId        String
+  order          Order     @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  foodItemId     String?
+  foodItem       FoodItem? @relation(fields: [foodItemId], references: [id], onDelete: SetNull)
+  nameSnapshot   String
+  basePricePaise Int
+  unitPricePaise Int
+  quantity       Int
+  instructions   String?
+
+  options OrderItemOption[]
+
+  @@index([orderId])
+}
+
+model OrderItemOption {
+  id              String    @id @default(uuid())
+  orderItemId     String
+  orderItem       OrderItem @relation(fields: [orderItemId], references: [id], onDelete: Cascade)
+  nameSnapshot    String
+  priceDeltaPaise Int
+}
+
+model OrderStatusEvent {
+  id        String      @id @default(uuid())
+  orderId   String
+  order     Order       @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  status    OrderStatus
+  actorId   String?
+  actor     User?       @relation(fields: [actorId], references: [id])
+  note      String?
+  createdAt DateTime    @default(now())
+
+  @@index([orderId, createdAt])
+}
+
+model Payment {
+  id           String        @id @default(uuid())
+  orderId      String        @unique
+  order        Order         @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  provider     String
+  status       PaymentStatus @default(PENDING)
+  amountPaise  Int
+  upiRef       String?
+  providerRef  String?
+  verifiedById String?
+  verifiedAt   DateTime?
+  raw          Json?
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+}
+
+model DeliveryPartner {
+  id            String        @id @default(uuid())
+  userId        String        @unique
+  user          User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  vehicle       String        @default("BIKE")
+  idProofUrl    String?
+  status        AccountStatus @default(PENDING)
+  isOnline      Boolean       @default(false)
+  latitude      Float?
+  longitude     Float?
+  lastSeenAt    DateTime?
+  isDemo        Boolean       @default(false)
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+
+  assignments DeliveryAssignment[]
+  reviews     Review[]
+
+  @@index([status, isOnline])
+}
+
+model DeliveryAssignment {
+  id                String          @id @default(uuid())
+  orderId           String
+  order             Order           @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  partnerId         String
+  partner           DeliveryPartner @relation(fields: [partnerId], references: [id], onDelete: Cascade)
+  state             AssignmentState @default(OFFERED)
+  payoutPaise       Int             @default(0)
+  codCollectedPaise Int?
+  offeredAt         DateTime        @default(now())
+  respondedAt       DateTime?
+  pickedUpAt        DateTime?
+  deliveredAt       DateTime?
+  createdAt         DateTime        @default(now())
+  updatedAt         DateTime        @updatedAt
+
+  @@unique([orderId, partnerId])
+  @@index([partnerId, state])
+}
+
+model Review {
+  id             String   @id @default(uuid())
+  orderId        String   @unique
+  order          Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  customerId     String
+  customer       User     @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  vendorId       String
+  vendor         Vendor   @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  partnerId      String?
+  partner        DeliveryPartner? @relation(fields: [partnerId], references: [id])
+  rating         Int
+  deliveryRating Int?
+  comment        String?
+  isHidden       Boolean  @default(false)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@index([vendorId, isHidden])
+}
+
+model Favorite {
+  id         String    @id @default(uuid())
+  userId     String
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  vendorId   String?
+  vendor     Vendor?   @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  foodItemId String?
+  foodItem   FoodItem? @relation(fields: [foodItemId], references: [id], onDelete: Cascade)
+  createdAt  DateTime  @default(now())
+
+  @@unique([userId, vendorId])
+  @@unique([userId, foodItemId])
+  @@index([userId])
+}
+
+model Notification {
+  id        String   @id @default(uuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type      String
+  title     String
+  body      String
+  data      Json?
+  readAt    DateTime?
+  createdAt DateTime @default(now())
+
+  @@index([userId, createdAt])
+}
+
+model Complaint {
+  id           String          @id @default(uuid())
+  userId       String
+  user         User            @relation("ComplaintAuthor", fields: [userId], references: [id], onDelete: Cascade)
+  orderId      String?
+  order        Order?          @relation(fields: [orderId], references: [id], onDelete: SetNull)
+  subject      String
+  message      String
+  status       ComplaintStatus @default(OPEN)
+  resolution   String?
+  handledById  String?
+  handledBy    User?           @relation("ComplaintHandler", fields: [handledById], references: [id])
+  createdAt    DateTime        @default(now())
+  updatedAt    DateTime        @updatedAt
+
+  @@index([status])
+}
+
+model Setting {
+  key       String   @id
+  value     Json
+  updatedAt DateTime @updatedAt
+}
