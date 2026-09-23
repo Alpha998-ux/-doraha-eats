@@ -29,6 +29,21 @@ export const complaintStatusEnum = pgEnum('complaint_status', [
   'OPEN', 'IN_PROGRESS', 'RESOLVED', 'REJECTED',
 ]);
 
+// --- Phase 2 additions ---
+export const shopStatusEnum = pgEnum('shop_status', ['OPEN', 'CLOSED', 'PAUSED']);
+
+export const vendorApplicationStatusEnum = pgEnum('vendor_application_status', [
+  'PENDING', 'UNDER_REVIEW', 'APPROVED', 'REJECTED',
+]);
+
+export const billingPeriodEnum = pgEnum('billing_period', [
+  'TRIAL', 'MONTHLY', 'QUARTERLY', 'YEARLY',
+]);
+
+export const subscriptionStateEnum = pgEnum('subscription_state', [
+  'TRIAL', 'ACTIVE', 'EXPIRED', 'CANCELLED', 'SUSPENDED',
+]);
+
 const ts = () => ({
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
@@ -42,6 +57,9 @@ export const users = pgTable('users', {
   email: text('email').unique(),
   phone: text('phone').unique(),
   passwordHash: text('password_hash'),
+  googleId: text('google_id').unique(),
+  passwordResetTokenHash: text('password_reset_token_hash'),
+  passwordResetExpiresAt: timestamp('password_reset_expires_at', { withTimezone: true }),
   fullName: text('full_name').notNull(),
   avatarUrl: text('avatar_url'),
   locale: text('locale').notNull().default('en'),
@@ -152,6 +170,7 @@ export const vendors = pgTable('vendors', {
   commissionPct: doublePrecision('commission_pct'),
   status: accountStatusEnum('status').notNull().default('PENDING'),
   isOpenManual: boolean('is_open_manual').notNull().default(true),
+  shopStatus: shopStatusEnum('shop_status').notNull().default('CLOSED'),
   isDemo: boolean('is_demo').notNull().default(false),
   ratingAvg: doublePrecision('rating_avg').notNull().default(0),
   ratingCount: integer('rating_count').notNull().default(0),
@@ -441,6 +460,117 @@ export const settings = pgTable('settings', {
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 });
 
+/* ------------------------------------------------------- vendor applications
+   Phase 2 addition — the pre-approval application record. A vendor "applies"
+   here first; only once admin approves does a row in `vendors` go ACTIVE. */
+
+export const vendorApplications = pgTable('vendor_applications', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  applicantUserId: uuid('applicant_user_id').notNull().references(() => users.id),
+  ownerName: text('owner_name').notNull(),
+  shopName: text('shop_name').notNull(),
+  phone: text('phone').notNull(),
+  email: text('email').notNull(),
+  addressLine: text('address_line').notNull(),
+  latitude: doublePrecision('latitude').notNull(),
+  longitude: doublePrecision('longitude').notNull(),
+  categorySlug: text('category_slug'),
+  description: text('description'),
+  opensAt: text('opens_at'),
+  closesAt: text('closes_at'),
+  logoUrl: text('logo_url'),
+  verificationDocUrl: text('verification_doc_url'),
+  payoutAccountName: text('payout_account_name'),
+  payoutAccountNumber: text('payout_account_number'),
+  payoutIfsc: text('payout_ifsc'),
+  termsAcceptedAt: timestamp('terms_accepted_at', { withTimezone: true }),
+  status: vendorApplicationStatusEnum('status').notNull().default('PENDING'),
+  reviewedById: uuid('reviewed_by_id').references(() => users.id),
+  reviewedAt: timestamp('reviewed_at', { withTimezone: true }),
+  rejectionReason: text('rejection_reason'),
+  resultingVendorId: uuid('resulting_vendor_id').references(() => vendors.id),
+  ...ts(),
+}, (t) => ({
+  statusIdx: index('vendor_apps_status_idx').on(t.status),
+}));
+
+/* ---------------------------------------------------------- subscriptions
+   Phase 2 addition. Kept deliberately separate from `orders.commissionPaise`
+   (order commission) and `deliveryZones.deliveryFeePaise` (delivery charge)
+   so the three can vary independently per the business-design requirement. */
+
+export const subscriptionPlans = pgTable('subscription_plans', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  name: text('name').notNull(),
+  billingPeriod: billingPeriodEnum('billing_period').notNull(),
+  pricePaise: integer('price_paise').notNull().default(0),
+  trialDays: integer('trial_days').notNull().default(0),
+  commissionPct: doublePrecision('commission_pct'),
+  features: jsonb('features'),
+  isActive: boolean('is_active').notNull().default(true),
+  ...ts(),
+});
+
+export const vendorSubscriptions = pgTable('vendor_subscriptions', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  vendorId: uuid('vendor_id').notNull().unique().references(() => vendors.id, { onDelete: 'cascade' }),
+  planId: uuid('plan_id').notNull().references(() => subscriptionPlans.id),
+  state: subscriptionStateEnum('state').notNull().default('TRIAL'),
+  trialEndsAt: timestamp('trial_ends_at', { withTimezone: true }),
+  currentPeriodEndsAt: timestamp('current_period_ends_at', { withTimezone: true }),
+  cancelledAt: timestamp('cancelled_at', { withTimezone: true }),
+  extendedById: uuid('extended_by_id').references(() => users.id),
+  extendedNote: text('extended_note'),
+  ...ts(),
+}, (t) => ({
+  stateIdx: index('vendor_subs_state_idx').on(t.state),
+}));
+
+export const subscriptionPayments = pgTable('subscription_payments', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  vendorSubscriptionId: uuid('vendor_subscription_id').notNull().references(() => vendorSubscriptions.id, { onDelete: 'cascade' }),
+  amountPaise: integer('amount_paise').notNull(),
+  provider: text('provider').notNull(),
+  providerRef: text('provider_ref'),
+  status: paymentStatusEnum('status').notNull().default('PENDING'),
+  periodStart: timestamp('period_start', { withTimezone: true }),
+  periodEnd: timestamp('period_end', { withTimezone: true }),
+  ...ts(),
+});
+
+/* --------------------------------------------------- delivery pricing tiers
+   Phase 2 addition. Replaces (additively — the flat deliveryZones.deliveryFeePaise
+   stays as a fallback) a single flat fee with distance-banded pricing per zone,
+   e.g. 0-2km = Rs20, 2-4km = Rs30. */
+
+export const deliveryPricingTiers = pgTable('delivery_pricing_tiers', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  zoneId: uuid('zone_id').notNull().references(() => deliveryZones.id, { onDelete: 'cascade' }),
+  fromKm: doublePrecision('from_km').notNull(),
+  toKm: doublePrecision('to_km').notNull(),
+  feePaise: integer('fee_paise').notNull(),
+  sortOrder: integer('sort_order').notNull().default(0),
+}, (t) => ({
+  zoneIdx: index('pricing_tiers_zone_idx').on(t.zoneId, t.sortOrder),
+}));
+
+/* -------------------------------------------------------------- audit log
+   Phase 2 addition. Generic actor/action/entity log for admin-sensitive
+   operations (approvals, suspensions, subscription extensions, etc). */
+
+export const auditLogs = pgTable('audit_logs', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  actorId: uuid('actor_id').references(() => users.id),
+  action: text('action').notNull(),
+  entityType: text('entity_type').notNull(),
+  entityId: text('entity_id'),
+  before: jsonb('before'),
+  after: jsonb('after'),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => ({
+  entityIdx: index('audit_entity_idx').on(t.entityType, t.entityId),
+}));
+
 /* -------------------------------------------------------------- relations */
 
 export const usersRelations = relations(users, ({ one, many }) => ({
@@ -451,6 +581,7 @@ export const usersRelations = relations(users, ({ one, many }) => ({
   orders: many(orders),
   favorites: many(favorites),
   notifications: many(notifications),
+  vendorApplications: many(vendorApplications),
 }));
 
 export const vendorsRelations = relations(vendors, ({ one, many }) => ({
@@ -462,6 +593,7 @@ export const vendorsRelations = relations(vendors, ({ one, many }) => ({
   foodItems: many(foodItems),
   orders: many(orders),
   reviews: many(reviews),
+  subscription: one(vendorSubscriptions, { fields: [vendors.id], references: [vendorSubscriptions.vendorId] }),
 }));
 
 export const vendorCategoriesRelations = relations(vendorCategories, ({ one }) => ({
@@ -566,6 +698,7 @@ export const deliveryZonesRelations = relations(deliveryZones, ({ many }) => ({
   vendors: many(vendors),
   addresses: many(addresses),
   orders: many(orders),
+  pricingTiers: many(deliveryPricingTiers),
 }));
 
 export const categoriesRelations = relations(categories, ({ many }) => ({
@@ -580,4 +713,32 @@ export const notificationsRelations = relations(notifications, ({ one }) => ({
 export const complaintsRelations = relations(complaints, ({ one }) => ({
   user: one(users, { fields: [complaints.userId], references: [users.id] }),
   order: one(orders, { fields: [complaints.orderId], references: [orders.id] }),
+}));
+
+export const vendorApplicationsRelations = relations(vendorApplications, ({ one }) => ({
+  applicant: one(users, { fields: [vendorApplications.applicantUserId], references: [users.id] }),
+  reviewedBy: one(users, { fields: [vendorApplications.reviewedById], references: [users.id] }),
+  resultingVendor: one(vendors, { fields: [vendorApplications.resultingVendorId], references: [vendors.id] }),
+}));
+
+export const subscriptionPlansRelations = relations(subscriptionPlans, ({ many }) => ({
+  vendorSubscriptions: many(vendorSubscriptions),
+}));
+
+export const vendorSubscriptionsRelations = relations(vendorSubscriptions, ({ one, many }) => ({
+  vendor: one(vendors, { fields: [vendorSubscriptions.vendorId], references: [vendors.id] }),
+  plan: one(subscriptionPlans, { fields: [vendorSubscriptions.planId], references: [subscriptionPlans.id] }),
+  payments: many(subscriptionPayments),
+}));
+
+export const subscriptionPaymentsRelations = relations(subscriptionPayments, ({ one }) => ({
+  vendorSubscription: one(vendorSubscriptions, { fields: [subscriptionPayments.vendorSubscriptionId], references: [vendorSubscriptions.id] }),
+}));
+
+export const deliveryPricingTiersRelations = relations(deliveryPricingTiers, ({ one }) => ({
+  zone: one(deliveryZones, { fields: [deliveryPricingTiers.zoneId], references: [deliveryZones.id] }),
+}));
+
+export const auditLogsRelations = relations(auditLogs, ({ one }) => ({
+  actor: one(users, { fields: [auditLogs.actorId], references: [users.id] }),
 }));
