@@ -134,23 +134,41 @@ customerRouter.post('/orders/:id/cancel', validate({
   body: z.object({ reason: z.string().max(200).optional() }),
 }), async (req, res, next) => {
   try {
+    const order = await orderService.getOrderDetail(req.params.id);
+    if (order.customerId !== req.user!.id) throw Errors.forbidden();
+    
+    // Prevent cancellation once vendor has accepted or started preparing
+    if (['PREPARING', 'READY', 'DISPATCHED', 'DELIVERED', 'CANCELLED'].includes(order.status)) {
+      throw Errors.badRequest('Order cannot be cancelled at this stage. Please contact support.');
+    }
+
     res.json({ order: await orderService.cancelByCustomer(req.user!.id, req.params.id, req.body.reason) });
   } catch (e) { next(e); }
 });
 
-/** UPI: customer submits the UTR; the mock provider validates, admin confirms. */
+/** UPI Verification: customer submits UTR; checks duplicates & enforces idempotent transition */
 customerRouter.post('/orders/:id/payment/upi-ref', validate({
-  body: z.object({ utr: z.string().min(6).max(30) }),
+  body: z.object({ utr: z.string().regex(/^\d{12}$/, 'UTR must be a 12-digit numeric reference number') }),
 }), async (req, res, next) => {
   try {
     const order = await orderService.getOrderDetail(req.params.id);
     if (order.customerId !== req.user!.id) throw Errors.forbidden();
     if (order.paymentMethod !== 'UPI') throw Errors.badRequest('This order is not a UPI order.');
+    if (order.paymentStatus === 'PAID') throw Errors.badRequest('This order has already been paid for.');
+
+    // Enforce UTR anti-replay check
+    const [existingUtr] = await db.select().from(payments)
+      .where(and(eq(payments.upiRef, req.body.utr), eq(payments.status, 'PAID'))).limit(1);
+    
+    if (existingUtr) {
+      throw Errors.conflict('This UPI reference number (UTR) has already been used for another payment.');
+    }
 
     const provider = getPaymentProvider('UPI');
     const result = await provider.verify({
       reference: order.payment?.providerRef ?? order.code, upiRef: req.body.utr,
     });
+
     await db.update(payments).set({
       upiRef: req.body.utr,
       status: result.paid ? 'PAID' : 'AWAITING_VERIFICATION',
