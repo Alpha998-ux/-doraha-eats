@@ -19,26 +19,35 @@ export default function OrderDetailScreen() {
   const [utr, setUtr] = useState('');
   const [busy, setBusy] = useState(false);
   const [rating, setRating] = useState(0);
+  
   const timer = useRef<ReturnType<typeof setInterval> | null>(null);
+  const isMounted = useRef(true);
 
   const load = useCallback(() => {
     if (!id) return;
     getOrder(id)
       .then(({ order: updatedOrder }) => {
+        if (!isMounted.current) return;
         setOrder(updatedOrder);
-        // Auto-clear polling interval if order is in terminal state
+        // Auto-clear polling interval if order reached terminal state
         if (TERMINAL_STATUSES.includes(updatedOrder.status) && timer.current) {
           clearInterval(timer.current);
           timer.current = null;
         }
       })
-      .catch((e) => setError(e instanceof ApiError ? e.message : 'Could not load order.'));
+      .catch((e) => {
+        if (!isMounted.current) return;
+        setError(e instanceof ApiError ? e.message : 'Could not load order.');
+      });
   }, [id]);
 
   useEffect(() => {
+    isMounted.current = true;
     load();
     timer.current = setInterval(load, POLL_MS);
+
     return () => {
+      isMounted.current = false;
       if (timer.current) clearInterval(timer.current);
     };
   }, [load]);
@@ -64,20 +73,37 @@ export default function OrderDetailScreen() {
     }
   }
 
+  function confirmCancel() {
+    Alert.alert(
+      'Cancel Order',
+      'Are you sure you want to cancel this order?',
+      [
+        { text: 'Keep Order', style: 'cancel' },
+        {
+          text: 'Cancel Order',
+          style: 'destructive',
+          onPress: doCancel,
+        },
+      ]
+    );
+  }
+
   async function doCancel() {
     setBusy(true);
     setError(null);
     try {
       const { order: o } = await cancelOrder(id);
-      setOrder(o);
+      if (isMounted.current) setOrder(o);
     } catch (e) {
-      setError(e instanceof ApiError ? e.message : 'Could not cancel order.');
+      if (isMounted.current) {
+        setError(e instanceof ApiError ? e.message : 'Could not cancel order.');
+      }
     } finally {
-      setBusy(false);
+      if (isMounted.current) setBusy(false);
     }
   }
 
-  async function submitUtr() {
+  async function handleSubmitUtr() {
     if (!isValidUtr) {
       setError('Please enter a valid 12-digit UTR reference number.');
       return;
@@ -86,12 +112,16 @@ export default function OrderDetailScreen() {
     setError(null);
     try {
       const { order: o } = await submitUpiRef(id, cleanUtr);
-      setOrder(o);
-      setUtr('');
+      if (isMounted.current) {
+        setOrder(o);
+        setUtr('');
+      }
     } catch (e) {
-      setError(e instanceof ApiError ? e.message : 'Could not verify payment UTR.');
+      if (isMounted.current) {
+        setError(e instanceof ApiError ? e.message : 'Could not verify payment UTR.');
+      }
     } finally {
-      setBusy(false);
+      if (isMounted.current) setBusy(false);
     }
   }
 
@@ -101,11 +131,13 @@ export default function OrderDetailScreen() {
     setError(null);
     try {
       await submitReview(id, { rating });
-      load();
+      if (isMounted.current) load();
     } catch (e) {
-      setError(e instanceof ApiError ? e.message : 'Could not submit review.');
+      if (isMounted.current) {
+        setError(e instanceof ApiError ? e.message : 'Could not submit review.');
+      }
     } finally {
-      setBusy(false);
+      if (isMounted.current) setBusy(false);
     }
   }
 
@@ -113,7 +145,9 @@ export default function OrderDetailScreen() {
     <Screen>
       <ScrollView contentContainerStyle={{ padding: spacing.lg, paddingBottom: spacing.xxl }}>
         <AppText variant="h2">{order.vendor.name}</AppText>
-        <AppText variant="caption" color={colors.textMuted} style={{ marginBottom: spacing.lg }}>{order.code}</AppText>
+        <AppText variant="caption" color={colors.textMuted} style={{ marginBottom: spacing.lg }}>
+          {order.code}
+        </AppText>
 
         <Card style={{ marginBottom: spacing.lg }}>
           <OrderStatusStepper status={order.status} events={order.events} />
@@ -122,10 +156,15 @@ export default function OrderDetailScreen() {
         {order.deliveryPartner && (
           <Card style={{ marginBottom: spacing.lg }}>
             <AppText variant="h3">Delivery partner</AppText>
-            <AppText variant="body">{order.deliveryPartner.name}</AppText>
+            <AppText variant="body" style={{ marginTop: 2 }}>{order.deliveryPartner.name}</AppText>
             {order.deliveryPartner.phone && (
-              <Pressable onPress={() => Linking.openURL(`tel:${order.deliveryPartner!.phone}`)}>
-                <AppText variant="bodyBold" color={colors.primary}>Call {order.deliveryPartner.phone}</AppText>
+              <Pressable
+                onPress={() => Linking.openURL(`tel:${order.deliveryPartner!.phone}`)}
+                style={{ marginTop: spacing.xs }}
+              >
+                <AppText variant="bodyBold" color={colors.primary}>
+                  Call {order.deliveryPartner.phone}
+                </AppText>
               </Pressable>
             )}
           </Card>
@@ -151,7 +190,7 @@ export default function OrderDetailScreen() {
               maxLength={12}
               style={styles.input}
             />
-            <Button onPress={submitUtr} loading={busy} disabled={!isValidUtr || busy}>
+            <Button onPress={handleSubmitUtr} loading={busy} disabled={!isValidUtr || busy}>
               Confirm payment
             </Button>
           </Card>
@@ -171,7 +210,7 @@ export default function OrderDetailScreen() {
               <AppText variant="body">{formatPaise(it.unitPricePaise * it.quantity)}</AppText>
             </View>
           ))}
-          <Divider />
+          <Divider style={{ marginVertical: spacing.xs }} />
           <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginTop: spacing.sm }}>
             <AppText variant="bodyBold">Total</AppText>
             <AppText variant="bodyBold">{formatPaise(order.totalPaise)}</AppText>
@@ -182,7 +221,9 @@ export default function OrderDetailScreen() {
         </Card>
 
         {canCancel && (
-          <Button variant="danger" onPress={doCancel} loading={busy}>{t('cancelOrder')}</Button>
+          <Button variant="danger" onPress={confirmCancel} loading={busy}>
+            {t('cancelOrder')}
+          </Button>
         )}
 
         {order.status === 'DELIVERED' && !order.review && (
@@ -195,9 +236,12 @@ export default function OrderDetailScreen() {
                 </Pressable>
               ))}
             </View>
-            <Button onPress={rate} loading={busy} disabled={!rating || busy}>Submit review</Button>
+            <Button onPress={rate} loading={busy} disabled={!rating || busy}>
+              Submit review
+            </Button>
           </Card>
         )}
+        
         {order.review && (
           <Card style={{ marginTop: spacing.lg }}>
             <AppText variant="body">You rated this order {order.review.rating} ★</AppText>
