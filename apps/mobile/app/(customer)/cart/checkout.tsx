@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import { ScrollView, View, StyleSheet, Pressable } from 'react-native';
 import { useRouter } from 'expo-router';
 import { Screen, AppText, Button, Divider, LoadingBlock, Badge } from '../../../src/components/ui';
@@ -18,81 +18,81 @@ export default function CheckoutScreen() {
   const [loading, setLoading] = useState(true);
   const [placing, setPlacing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  
+  const isMounted = useRef(true);
 
   useEffect(() => {
-    let isMounted = true;
+    isMounted.current = true;
     listAddresses()
       .then(({ addresses }) => {
-        if (!isMounted) return;
+        if (!isMounted.current) return;
         setAddresses(addresses);
         // Default to primary valid address (in-zone only)
         const primary = addresses.find((a) => a.isDefault && a.zoneId) ?? addresses.find((a) => a.zoneId);
         if (primary) setSelectedId(primary.id);
       })
       .catch((e) => {
-        if (!isMounted) return;
+        if (!isMounted.current) return;
         setError(e instanceof ApiError ? e.message : 'Failed to load delivery addresses.');
       })
       .finally(() => {
-        if (isMounted) setLoading(false);
+        if (isMounted.current) setLoading(false);
       });
 
-    return () => { isMounted = false; };
+    return () => {
+      isMounted.current = false;
+    };
   }, []);
 
   useEffect(() => {
     if (!selectedId) return;
-    let isMounted = true;
     setError(null);
 
     quoteCart(selectedId)
       .then((res) => {
-        if (isMounted) setQuote(res);
+        if (isMounted.current) setQuote(res);
       })
       .catch((e) => {
-        if (isMounted) setError(e instanceof ApiError ? e.message : 'Could not load pricing details.');
+        if (isMounted.current) {
+          setQuote(null);
+          setError(e instanceof ApiError ? e.message : 'Could not load pricing details.');
+        }
       });
-
-    return () => { isMounted = false; };
   }, [selectedId]);
 
+  const selectedAddr = addresses.find((a) => a.id === selectedId);
+  const b = quote?.breakdown;
+  const blocked = quote && !quote.canPlaceOrder;
+
   async function submit() {
-    if (!selectedId || placing || blocked) return;
+    if (!selectedId || placing || blocked || (selectedAddr && !selectedAddr.zoneId)) return;
     setPlacing(true);
     setError(null);
 
     try {
       const { order } = await placeOrder({ addressId: selectedId, paymentMethod: method });
 
-      if (method === 'UPI') {
-        // Handle UPI Intent or Payment Gateway SDK trigger
-        if (order.paymentUrl) {
-          // Deep-link or launch Razorpay/Payment WebView
-          router.replace(`/(customer)/orders/${order.id}/pay?url=${encodeURIComponent(order.paymentUrl)}`);
-          return;
-        }
+      if (method === 'UPI' && order.paymentUrl) {
+        router.replace(`/(customer)/orders/${order.id}/pay?url=${encodeURIComponent(order.paymentUrl)}`);
+        return;
       }
 
-      // COD or auto-verified payment success route
       router.replace(`/(customer)/orders/${order.id}`);
     } catch (e) {
-      setError(e instanceof ApiError ? e.message : 'Could not place order. Please try again.');
-    } finally {
-      setPlacing(false);
+      if (isMounted.current) {
+        setError(e instanceof ApiError ? e.message : 'Could not place order. Please try again.');
+        setPlacing(false);
+      }
     }
   }
 
   if (loading) return <Screen><LoadingBlock /></Screen>;
 
-  const selectedAddr = addresses.find((a) => a.id === selectedId);
-  const b = quote?.breakdown;
-  const blocked = quote && !quote.canPlaceOrder;
-
   return (
     <Screen>
       <ScrollView contentContainerStyle={{ padding: spacing.lg, paddingBottom: 140 }}>
         <AppText variant="h3" style={{ marginBottom: spacing.sm }}>Delivery address</AppText>
-        
+
         {addresses.length === 0 ? (
           <AppText variant="body" color={colors.textMuted} style={{ marginBottom: spacing.sm }}>
             No addresses found. Please add a delivery location.
@@ -151,7 +151,7 @@ export default function CheckoutScreen() {
           </AppText>
         )}
 
-        {blocked && quote!.blockers.map((bl) => (
+        {blocked && quote?.blockers.map((bl) => (
           <AppText key={bl.code} variant="body" color={colors.danger} style={{ marginTop: spacing.sm }}>
             {bl.message}
           </AppText>
