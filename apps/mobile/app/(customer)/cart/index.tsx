@@ -144,4 +144,4 @@ const styles = StyleSheet.create({
   row: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: spacing.md, alignItems: 'center' },
   summaryRow: { flexDirection: 'row', justifyContent: 'space-between', marginTop: spacing.md },
   footer: { position: 'absolute', left: 0, right: 0, bottom: 0, padding: spacing.lg, backgroundColor: '#fff', borderTopWidth: 1, borderTopColor: colors.border },
-});
+}); 
