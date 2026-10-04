@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { ScrollView, View, StyleSheet, TextInput, Linking, Pressable } from 'react-native';
+import { ScrollView, View, StyleSheet, TextInput, Linking, Pressable, Alert } from 'react-native';
 import { useLocalSearchParams } from 'expo-router';
 import { Screen, AppText, Button, Card, Divider, LoadingBlock, ErrorState } from '../../../src/components/ui';
 import { OrderStatusStepper } from '../../../src/components/OrderStatusStepper';
@@ -10,6 +10,7 @@ import { ApiError } from '../../../src/lib/api';
 import { t } from '../../../src/lib/i18n';
 
 const POLL_MS = 5000;
+const TERMINAL_STATUSES = ['DELIVERED', 'CANCELLED'];
 
 export default function OrderDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -21,13 +22,25 @@ export default function OrderDetailScreen() {
   const timer = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const load = useCallback(() => {
-    getOrder(id).then(({ order }) => setOrder(order)).catch((e) => setError(e instanceof ApiError ? e.message : 'Could not load order.'));
+    if (!id) return;
+    getOrder(id)
+      .then(({ order: updatedOrder }) => {
+        setOrder(updatedOrder);
+        // Auto-clear polling interval if order is in terminal state
+        if (TERMINAL_STATUSES.includes(updatedOrder.status) && timer.current) {
+          clearInterval(timer.current);
+          timer.current = null;
+        }
+      })
+      .catch((e) => setError(e instanceof ApiError ? e.message : 'Could not load order.'));
   }, [id]);
 
   useEffect(() => {
     load();
     timer.current = setInterval(load, POLL_MS);
-    return () => { if (timer.current) clearInterval(timer.current); };
+    return () => {
+      if (timer.current) clearInterval(timer.current);
+    };
   }, [load]);
 
   if (error && !order) return <Screen><ErrorState message={error} onRetry={load} /></Screen>;
@@ -35,27 +48,65 @@ export default function OrderDetailScreen() {
 
   const canCancel = order.status === 'PLACED';
   const needsUpi = order.paymentMethod === 'UPI' && order.paymentStatus !== 'PAID';
+  const cleanUtr = utr.trim();
+  const isValidUtr = /^\d{12}$/.test(cleanUtr);
+
+  async function handleOpenUpiApp(uri: string) {
+    try {
+      const supported = await Linking.canOpenURL(uri);
+      if (supported) {
+        await Linking.openURL(uri);
+      } else {
+        Alert.alert('No UPI App Found', 'Please open GPay, PhonePe, or Paytm manually to complete payment.');
+      }
+    } catch {
+      Alert.alert('Error', 'Unable to launch UPI application.');
+    }
+  }
 
   async function doCancel() {
     setBusy(true);
-    try { const { order: o } = await cancelOrder(id); setOrder(o); }
-    catch (e) { setError(e instanceof ApiError ? e.message : 'Could not cancel order.'); }
-    finally { setBusy(false); }
+    setError(null);
+    try {
+      const { order: o } = await cancelOrder(id);
+      setOrder(o);
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : 'Could not cancel order.');
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function submitUtr() {
+    if (!isValidUtr) {
+      setError('Please enter a valid 12-digit UTR reference number.');
+      return;
+    }
     setBusy(true);
-    try { const { order: o } = await submitUpiRef(id, utr.trim()); setOrder(o); }
-    catch (e) { setError(e instanceof ApiError ? e.message : 'Could not verify payment.'); }
-    finally { setBusy(false); }
+    setError(null);
+    try {
+      const { order: o } = await submitUpiRef(id, cleanUtr);
+      setOrder(o);
+      setUtr('');
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : 'Could not verify payment UTR.');
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function rate() {
     if (!rating) return;
     setBusy(true);
-    try { await submitReview(id, { rating }); load(); }
-    catch (e) { setError(e instanceof ApiError ? e.message : 'Could not submit review.'); }
-    finally { setBusy(false); }
+    setError(null);
+    try {
+      await submitReview(id, { rating });
+      load();
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : 'Could not submit review.');
+    } finally {
+      setBusy(false);
+    }
   }
 
   return (
@@ -83,14 +134,33 @@ export default function OrderDetailScreen() {
         {needsUpi && order.payment?.raw?.upiUri && (
           <Card style={{ marginBottom: spacing.lg }}>
             <AppText variant="h3">Complete UPI payment</AppText>
-            <AppText variant="body" color={colors.textMuted} style={{ marginVertical: spacing.sm }}>{order.payment.raw.instructions}</AppText>
-            <Button variant="secondary" onPress={() => Linking.openURL(order.payment!.raw!.upiUri!)}>Open UPI app</Button>
+            <AppText variant="body" color={colors.textMuted} style={{ marginVertical: spacing.sm }}>
+              {order.payment.raw.instructions ?? 'Pay via any UPI app and enter the 12-digit UTR number below.'}
+            </AppText>
+            <Button variant="secondary" onPress={() => handleOpenUpiApp(order.payment!.raw!.upiUri!)}>
+              Open UPI app
+            </Button>
             <TextInput
-              value={utr} onChangeText={setUtr} placeholder="Enter 12-digit UTR"
+              value={utr}
+              onChangeText={(val) => {
+                setUtr(val);
+                if (error) setError(null);
+              }}
+              placeholder="Enter 12-digit UTR (e.g. 123456789012)"
+              keyboardType="numeric"
+              maxLength={12}
               style={styles.input}
             />
-            <Button onPress={submitUtr} loading={busy} disabled={utr.length < 6}>Confirm payment</Button>
+            <Button onPress={submitUtr} loading={busy} disabled={!isValidUtr || busy}>
+              Confirm payment
+            </Button>
           </Card>
+        )}
+
+        {error && (
+          <AppText variant="caption" color={colors.danger} style={{ marginBottom: spacing.md }}>
+            {error}
+          </AppText>
         )}
 
         <Card style={{ marginBottom: spacing.lg }}>
@@ -106,7 +176,9 @@ export default function OrderDetailScreen() {
             <AppText variant="bodyBold">Total</AppText>
             <AppText variant="bodyBold">{formatPaise(order.totalPaise)}</AppText>
           </View>
-          <AppText variant="caption" color={colors.textMuted} style={{ marginTop: 4 }}>{order.addressLine}, {order.addressArea}</AppText>
+          <AppText variant="caption" color={colors.textMuted} style={{ marginTop: 4 }}>
+            {order.addressLine}, {order.addressArea}
+          </AppText>
         </Card>
 
         {canCancel && (
@@ -123,7 +195,7 @@ export default function OrderDetailScreen() {
                 </Pressable>
               ))}
             </View>
-            <Button onPress={rate} loading={busy} disabled={!rating}>Submit review</Button>
+            <Button onPress={rate} loading={busy} disabled={!rating || busy}>Submit review</Button>
           </Card>
         )}
         {order.review && (
@@ -137,5 +209,12 @@ export default function OrderDetailScreen() {
 }
 
 const styles = StyleSheet.create({
-  input: { borderWidth: 1, borderColor: colors.border, borderRadius: radius.sm, padding: spacing.sm, marginVertical: spacing.sm },
+  input: {
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radius.sm,
+    padding: spacing.sm,
+    marginVertical: spacing.sm,
+    backgroundColor: '#FFF',
+  },
 });
