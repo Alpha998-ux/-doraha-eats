@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { ScrollView, View, StyleSheet, Pressable, Switch, RefreshControl } from 'react-native';
 import { useRouter, useFocusEffect } from 'expo-router';
-import * as Location from 'expo-location' ;
+import * as Location from 'expo-location';
 import { Screen, AppText, Badge, Button, Card, LoadingBlock, EmptyState } from '../../src/components/ui';
 import { colors, spacing } from '../../src/theme/tokens';
 import {
@@ -20,74 +20,139 @@ export default function RiderDashboard() {
   const [earnings, setEarnings] = useState<{ todayDeliveries: number; todayEarningsPaise: number } | null>(null);
   const [jobs, setJobs] = useState<DeliveryJob[]>([]);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
 
-  const load = useCallback(() => {
-    Promise.all([getMyPartner(), listAvailableDeliveries()]).then(([p, d]) => {
-      setPartner(p.partner); setEarnings(p.earnings); setJobs(d.deliveries);
-    }).catch((e) => setError(e instanceof ApiError ? e.message : 'Failed to load.')).finally(() => setLoading(false));
+  const isMounted = useRef(true);
+
+  const load = useCallback(async () => {
+    try {
+      const [p, d] = await Promise.all([getMyPartner(), listAvailableDeliveries()]);
+      if (isMounted.current) {
+        setPartner(p.partner);
+        setEarnings(p.earnings);
+        setJobs(d.deliveries);
+      }
+    } catch (e) {
+      if (isMounted.current) {
+        setError(e instanceof ApiError ? e.message : 'Failed to load delivery details.');
+      }
+    } finally {
+      if (isMounted.current) {
+        setLoading(false);
+        setRefreshing(false);
+      }
+    }
   }, []);
 
-  useFocusEffect(useCallback(() => {
+  const handleRefresh = useCallback(() => {
+    setRefreshing(true);
     load();
-    const interval = setInterval(load, 5000);
-    return () => clearInterval(interval);
-  }, [load]));
+  }, [load]);
 
-  // Best-effort GPS ping while online; the app works fine without location permission too.
+  useFocusEffect(
+    useCallback(() => {
+      isMounted.current = true;
+      load();
+      const interval = setInterval(load, 5000);
+      return () => {
+        isMounted.current = false;
+        clearInterval(interval);
+      };
+    }, [load])
+  );
+
+  // Best-effort GPS ping while online
   useEffect(() => {
     if (!partner?.isOnline) return;
     let sub: Location.LocationSubscription | null = null;
+    
     (async () => {
       const { status } = await Location.requestForegroundPermissionsAsync().catch(() => ({ status: 'denied' as const }));
-      if (status !== 'granted') return;
-      sub = await Location.watchPositionAsync({ accuracy: Location.Accuracy.Balanced, timeInterval: 15000, distanceInterval: 50 }, (pos: Location.LocationObject) => {
-        updateMyLocation(pos.coords.latitude, pos.coords.longitude).catch(() => {});
-      });
+      if (status !== 'granted' || !isMounted.current) return;
+      
+      sub = await Location.watchPositionAsync(
+        { accuracy: Location.Accuracy.Balanced, timeInterval: 15000, distanceInterval: 50 },
+        (pos: Location.LocationObject) => {
+          updateMyLocation(pos.coords.latitude, pos.coords.longitude).catch(() => {});
+        }
+      );
     })();
-    return () => sub?.remove();
+
+    return () => {
+      if (sub) sub.remove();
+    };
   }, [partner?.isOnline]);
 
   async function toggleOnline() {
-    if (!partner) return;
-    const { partner: p } = await setOnline(!partner.isOnline);
-    setPartner(p);
+    if (!partner || busy) return;
+    setBusy('toggle');
+    setError(null);
+    try {
+      const { partner: p } = await setOnline(!partner.isOnline);
+      if (isMounted.current) setPartner(p);
+    } catch (e) {
+      if (isMounted.current) {
+        setError(e instanceof ApiError ? e.message : 'Could not update online status.');
+      }
+    } finally {
+      if (isMounted.current) setBusy(null);
+    }
   }
 
   async function accept(job: DeliveryJob) {
-    setBusy(job.orderId); setError(null);
+    if (busy) return;
+    setBusy(job.orderId);
+    setError(null);
     try {
       await acceptDelivery(job.orderId);
       router.push(`/(rider)/delivery/${job.orderId}`);
     } catch (e) {
-      setError(e instanceof ApiError ? e.message : 'This delivery is no longer available.');
-      load();
-    } finally { setBusy(null); }
+      if (isMounted.current) {
+        setError(e instanceof ApiError ? e.message : 'This delivery is no longer available.');
+        setBusy(null);
+        load();
+      }
+    }
   }
 
   if (loading) return <Screen><LoadingBlock /></Screen>;
 
   return (
     <Screen>
-      <ScrollView contentContainerStyle={{ padding: spacing.lg }} refreshControl={<RefreshControl refreshing={false} onRefresh={load} />}>
-        <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
+      <ScrollView
+        contentContainerStyle={{ padding: spacing.lg }}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={handleRefresh} />}
+      >
+        <View style={styles.header}>
           <AppText variant="h1">Deliveries</AppText>
-          <Pressable onPress={logout}><AppText variant="caption" color={colors.danger}>Log out</AppText></Pressable>
+          <Pressable onPress={logout}>
+            <AppText variant="caption" color={colors.danger}>Log out</AppText>
+          </Pressable>
         </View>
 
         {partner?.status !== 'ACTIVE' ? (
           <Card style={{ marginTop: spacing.lg }}>
             <AppText variant="bodyBold">Awaiting approval</AppText>
-            <AppText variant="body" color={colors.textMuted}>An admin needs to approve your account before you can accept deliveries.</AppText>
+            <AppText variant="body" color={colors.textMuted}>
+              An admin needs to approve your account before you can accept deliveries.
+            </AppText>
           </Card>
         ) : (
           <Card style={{ marginTop: spacing.lg, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
             <View>
               <AppText variant="bodyBold">{partner.isOnline ? t('goOffline') : t('goOnline')}</AppText>
-              <AppText variant="caption" color={colors.textMuted}>{partner.isOnline ? "You're visible for new jobs" : 'Go online to see jobs'}</AppText>
+              <AppText variant="caption" color={colors.textMuted}>
+                {partner.isOnline ? "You're visible for new jobs" : 'Go online to see jobs'}
+              </AppText>
             </View>
-            <Switch value={partner.isOnline} onValueChange={toggleOnline} trackColor={{ true: colors.primary }} />
+            <Switch
+              value={partner.isOnline}
+              onValueChange={toggleOnline}
+              disabled={busy === 'toggle'}
+              trackColor={{ true: colors.primary }}
+            />
           </Card>
         )}
 
@@ -103,9 +168,16 @@ export default function RiderDashboard() {
           </Card>
         )}
 
-        {error && <AppText variant="body" color={colors.danger} style={{ marginTop: spacing.md }}>{error}</AppText>}
+        {error && (
+          <AppText variant="body" color={colors.danger} style={{ marginTop: spacing.md }}>
+            {error}
+          </AppText>
+        )}
 
-        <AppText variant="h2" style={{ marginTop: spacing.xl, marginBottom: spacing.md }}>{t('availableOrders')}</AppText>
+        <AppText variant="h2" style={{ marginTop: spacing.xl, marginBottom: spacing.md }}>
+          {t('availableOrders')}
+        </AppText>
+
         {!partner?.isOnline ? (
           <EmptyState title="You're offline" subtitle="Go online to see available deliveries." />
         ) : jobs.length === 0 ? (
@@ -122,7 +194,9 @@ export default function RiderDashboard() {
               </AppText>
               <AppText variant="caption" color={colors.textMuted}>Drop: {job.dropArea}</AppText>
               <View style={{ marginTop: spacing.sm }}>
-                <Button onPress={() => accept(job)} loading={busy === job.orderId} fullWidth={false}>Accept</Button>
+                <Button onPress={() => accept(job)} loading={busy === job.orderId} fullWidth={false}>
+                  Accept
+                </Button>
               </View>
             </Card>
           ))
@@ -131,3 +205,11 @@ export default function RiderDashboard() {
     </Screen>
   );
 }
+
+const styles = StyleSheet.create({
+  header: {
+    flexDirection: 'row',
+    justify: 'space-between',
+    alignItems: 'center',
+  },
+});
