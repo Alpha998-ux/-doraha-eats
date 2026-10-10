@@ -48,6 +48,12 @@ authRouter.post('/otp/verify', authLimiter, validate({
   try { res.json(await auth.verifyOtp(req.body.phone, req.body.code, req.body.fullName)); } catch (e) { next(e); }
 });
 
+authRouter.post('/google', authLimiter, validate({
+  body: z.object({ idToken: z.string().min(1) }),
+}), async (req, res, next) => {
+  try { res.json(await auth.googleAuth(req.body.idToken)); } catch (e) { next(e); }
+});
+
 authRouter.post('/device-token', authenticate, validate({
   body: z.object({ token: z.string().min(4), platform: z.enum(['android', 'ios', 'web']) }),
 }), async (req, res, next) => {
