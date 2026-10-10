@@ -1,11 +1,11 @@
 import { eq, or } from 'drizzle-orm';
+import { OAuth2Client } from 'google-auth-library';
 import { db } from '../db/index.js';
-import { users, customerProfiles, deliveryPartners, carts } from '../db/schema.js';
+import { users, customerProfiles, deliveryPartners, carts, otpCodes } from '../db/schema.js';
 import { hashPassword, verifyPassword } from '../lib/password.js';
 import { signToken } from '../lib/jwt.js';
 import { Errors } from '../lib/errors.js';
 import { smsProvider } from '../adapters/sms/index.js';
-import { otpCodes } from '../db/schema.js';
 
 export type PublicUser = {
   id: string; role: string; fullName: string; email: string | null;
@@ -16,6 +16,8 @@ const toPublic = (u: typeof users.$inferSelect): PublicUser => ({
   id: u.id, role: u.role, fullName: u.fullName, email: u.email,
   phone: u.phone, locale: u.locale, status: u.status,
 });
+
+const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 
 export async function register(input: {
   fullName: string; password: string; email?: string; phone?: string;
@@ -66,6 +68,38 @@ export async function login(input: { email?: string; phone?: string; password: s
     throw Errors.unauthorized('Incorrect email or password.');
   }
   if (user.status === 'SUSPENDED') throw Errors.forbidden('This account has been suspended.');
+
+  await db.update(users).set({ lastLoginAt: new Date() }).where(eq(users.id, user.id));
+  return { user: toPublic(user), token: signToken({ sub: user.id, role: user.role }) };
+}
+
+export async function googleAuth(idToken: string) {
+  const ticket = await googleClient.verifyIdToken({
+    idToken,
+    audience: process.env.GOOGLE_CLIENT_ID,
+  });
+  const payload = ticket.getPayload();
+  if (!payload || !payload.email) {
+    throw Errors.badRequest('Invalid Google ID token.');
+  }
+
+  const { email, name } = payload;
+  let [user] = await db.select().from(users).where(eq(users.email, email)).limit(1);
+
+  if (!user) {
+    [user] = await db.insert(users).values({
+      role: 'CUSTOMER',
+      email,
+      fullName: name ?? 'Doraha customer',
+      status: 'ACTIVE',
+    }).returning();
+    await db.insert(customerProfiles).values({ userId: user.id });
+    await db.insert(carts).values({ userId: user.id });
+  }
+
+  if (user.status === 'SUSPENDED') {
+    throw Errors.forbidden('This account has been suspended.');
+  }
 
   await db.update(users).set({ lastLoginAt: new Date() }).where(eq(users.id, user.id));
   return { user: toPublic(user), token: signToken({ sub: user.id, role: user.role }) };
