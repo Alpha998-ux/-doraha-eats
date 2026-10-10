@@ -21,3 +21,7 @@ export const register = (input: {
 }) => api<{ user: SessionUser; token: string }>('/auth/register', {
   method: 'POST', body: input, skipAuth: true,
 });
+export const googleAuth = (idToken: string) =>
+  api<{ user: SessionUser; token: string }>('/auth/google', {
+    method: 'POST', body: { idToken }, skipAuth: true,
+  });
