@@ -1,8 +1,8 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { ScrollView, TextInput, StyleSheet, View } from 'react-native';
 import { useRouter } from 'expo-router';
 import { Screen, AppText, Button, Chip } from '../../../src/components/ui';
-import { colors, spacing } from '../../../src/theme/tokens';
+import { colors, spacing, radius } from '../../../src/theme/tokens';
 import { addAddress } from '../../../src/features/orders/api';
 import { getConfig } from '../../../src/features/catalog/api';
 import { useLocationStore } from '../../../src/store/locationStore';
@@ -24,48 +24,167 @@ export default function AddAddressScreen() {
   const [landmark, setLandmark] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+
   const setResolved = useLocationStore((s) => s.setResolved);
   const setAddress = useLocationStore((s) => s.setAddress);
 
-  React.useEffect(() => { getConfig().then((c) => { setZones(c.serviceArea); setZoneId(c.serviceArea[0]?.id ?? null); }); }, []);
+  const isMounted = useRef(true);
+
+  useEffect(() => {
+    isMounted.current = true;
+    getConfig()
+      .then((c) => {
+        if (isMounted.current) {
+          setZones(c.serviceArea);
+          setZoneId(c.serviceArea[0]?.id ?? null);
+        }
+      })
+      .catch(() => {
+        if (isMounted.current) {
+          setError('Failed to load service areas.');
+        }
+      });
+
+    return () => {
+      isMounted.current = false;
+    };
+  }, []);
 
   async function save() {
+    if (busy) return;
     setError(null);
-    if (!area.trim() || !line1.trim()) { setError('Please fill in the area and address.'); return; }
+
+    const trimmedArea = area.trim();
+    const trimmedLine1 = line1.trim();
+
+    if (!trimmedArea || !trimmedLine1) {
+      setError('Please fill in both locality/area and full address.');
+      return;
+    }
+
     const zone = zones.find((z) => z.id === zoneId);
     setBusy(true);
+
     try {
       const jitter = () => (Math.random() - 0.5) * 0.004;
       const latitude = (zone?.latitude ?? 30.7996) + jitter();
       const longitude = (zone?.longitude ?? 76.0236) + jitter();
-      const res = await addAddress({ label, area: area.trim(), line1: line1.trim(), landmark: landmark.trim() || undefined, latitude, longitude, isDefault: true });
-      setResolved(res.serviceable, res.serviceable ? { id: zone!.id, name: zone!.name, deliveryFeePaise: zone!.deliveryFeePaise, minOrderPaise: zone!.minOrderPaise, etaMinutes: zone!.etaMinutes } : null);
+
+      const res = await addAddress({
+        label,
+        area: trimmedArea,
+        line1: trimmedLine1,
+        landmark: landmark.trim() || undefined,
+        latitude,
+        longitude,
+        isDefault: true,
+      });
+
+      setResolved(
+        res.serviceable,
+        res.serviceable && zone
+          ? {
+              id: zone.id,
+              name: zone.name,
+              deliveryFeePaise: zone.deliveryFeePaise,
+              minOrderPaise: zone.minOrderPaise,
+              etaMinutes: zone.etaMinutes,
+            }
+          : null
+      );
       setAddress(res.address.id, res.address.area);
-      router.replace('/(customer)/(tabs)');
+
+      if (isMounted.current) {
+        router.replace('/(customer)/(tabs)');
+      }
     } catch (e) {
-      setError(e instanceof ApiError ? e.message : 'Could not save address.');
-    } finally { setBusy(false); }
+      if (isMounted.current) {
+        setError(e instanceof ApiError ? e.message : 'Could not save address.');
+      }
+    } finally {
+      if (isMounted.current) {
+        setBusy(false);
+      }
+    }
   }
 
   return (
     <Screen>
       <ScrollView contentContainerStyle={{ padding: spacing.lg }}>
-        <AppText variant="h3" style={{ marginBottom: spacing.sm }}>Delivery area</AppText>
-        <View style={{ flexDirection: 'row', flexWrap: 'wrap', marginBottom: spacing.lg }}>
-          {zones.map((z) => <Chip key={z.id} label={z.name} selected={zoneId === z.id} onPress={() => setZoneId(z.id)} />)}
+        <AppText variant="h3" style={{ marginBottom: spacing.sm }}>
+          Delivery area
+        </AppText>
+        <View style={{ flexDirection: 'row', flexWrap: 'wrap', marginBottom: spacing.lg, gap: spacing.xs }}>
+          {zones.map((z) => (
+            <Chip
+              key={z.id}
+              label={z.name}
+              selected={zoneId === z.id}
+              onPress={() => !busy && setZoneId(z.id)}
+            />
+          ))}
         </View>
 
-        <AppText variant="h3" style={{ marginBottom: spacing.sm }}>Label</AppText>
-        <View style={{ flexDirection: 'row', marginBottom: spacing.lg }}>
-          {(['HOME', 'WORK', 'OTHER'] as const).map((l) => <Chip key={l} label={l} selected={label === l} onPress={() => setLabel(l)} />)}
+        <AppText variant="h3" style={{ marginBottom: spacing.sm }}>
+          Label
+        </AppText>
+        <View style={{ flexDirection: 'row', marginBottom: spacing.lg, gap: spacing.xs }}>
+          {(['HOME', 'WORK', 'OTHER'] as const).map((l) => (
+            <Chip
+              key={l}
+              label={l}
+              selected={label === l}
+              onPress={() => !busy && setLabel(l)}
+            />
+          ))}
         </View>
 
-        <Field label="Area / locality"><TextInput value={area} onChangeText={setArea} style={styles.input} placeholder="e.g. Main Bazaar" /></Field>
-        <Field label="Full address"><TextInput value={line1} onChangeText={setLine1} style={styles.input} placeholder="House no, street" multiline /></Field>
-        <Field label="Landmark (optional)"><TextInput value={landmark} onChangeText={setLandmark} style={styles.input} placeholder="e.g. Near bus stand" /></Field>
+        <Field label="Area / locality">
+          <TextInput
+            value={area}
+            onChangeText={(text) => {
+              setArea(text);
+              if (error) setError(null);
+            }}
+            editable={!busy}
+            style={styles.input}
+            placeholder="e.g. Main Bazaar"
+          />
+        </Field>
 
-        {error && <AppText variant="body" color={colors.danger} style={{ marginBottom: spacing.md }}>{error}</AppText>}
-        <Button onPress={save} loading={busy}>Save address</Button>
+        <Field label="Full address">
+          <TextInput
+            value={line1}
+            onChangeText={(text) => {
+              setLine1(text);
+              if (error) setError(null);
+            }}
+            editable={!busy}
+            style={styles.input}
+            placeholder="House no, street"
+            multiline
+          />
+        </Field>
+
+        <Field label="Landmark (optional)">
+          <TextInput
+            value={landmark}
+            onChangeText={setLandmark}
+            editable={!busy}
+            style={styles.input}
+            placeholder="e.g. Near bus stand"
+          />
+        </Field>
+
+        {error && (
+          <AppText variant="body" color={colors.danger} style={{ marginBottom: spacing.md }}>
+            {error}
+          </AppText>
+        )}
+
+        <Button onPress={save} loading={busy}>
+          Save address
+        </Button>
       </ScrollView>
     </Screen>
   );
@@ -74,12 +193,20 @@ export default function AddAddressScreen() {
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <View style={{ marginBottom: spacing.md }}>
-      <AppText variant="caption" color={colors.textMuted} style={{ marginBottom: 4 }}>{label}</AppText>
+      <AppText variant="caption" color={colors.textMuted} style={{ marginBottom: 4 }}>
+        {label}
+      </AppText>
       {children}
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  input: { borderWidth: 1, borderColor: colors.border, borderRadius: 12, padding: 12, backgroundColor: '#fff' },
+  input: {
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radius.md,
+    padding: 12,
+    backgroundColor: '#fff',
+  },
 });
