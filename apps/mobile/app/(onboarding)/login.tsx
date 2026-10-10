@@ -1,11 +1,15 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { View, TextInput, StyleSheet, KeyboardAvoidingView, Platform } from 'react-native';
 import { useRouter } from 'expo-router';
+import * as WebBrowser from 'expo-web-browser';
+import * as Google from 'expo-auth-session/providers/google';
 import { Screen, AppText, Button } from '../../src/components/ui';
 import { colors, spacing } from '../../src/theme/tokens';
-import { requestOtp, login } from '../../src/features/auth/api';
+import { requestOtp, login, googleAuth } from '../../src/features/auth/api';
 import { ApiError } from '../../src/lib/api';
 import { t } from '../../src/lib/i18n';
+
+WebBrowser.maybeCompleteAuthSession();
 
 export default function LoginScreen() {
   const router = useRouter();
@@ -15,6 +19,36 @@ export default function LoginScreen() {
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+
+  // Google Auth Session Hook
+  const [request, response, promptAsync] = Google.useIdTokenAuthRequest({
+    webClientId: process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID,
+    androidClientId: process.env.EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID,
+    iosClientId: process.env.EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID,
+  });
+
+  useEffect(() => {
+    if (response?.type === 'success') {
+      const { id_token } = response.params;
+      if (id_token) {
+        handleGoogleLogin(id_token);
+      }
+    }
+  }, [response]);
+
+  async function handleGoogleLogin(idToken: string) {
+    setError(null);
+    setBusy(true);
+    try {
+      const { user, token } = await googleAuth(idToken);
+      const { useAuthStore } = await import('../../src/store/authStore');
+      await useAuthStore.getState().setSession(user, token);
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : 'Google sign-in failed. Please try again.');
+    } finally {
+      setBusy(false);
+    }
+  }
 
   async function sendOtp() {
     setError(null);
@@ -56,6 +90,17 @@ export default function LoginScreen() {
               style={styles.input} maxLength={13}
             />
             <Button onPress={sendOtp} loading={busy}>Send OTP</Button>
+            
+            {/* Google Sign In Button */}
+            <Button 
+              variant="outline" 
+              onPress={() => promptAsync()} 
+              disabled={!request || busy}
+              style={{ marginTop: spacing.sm }}
+            >
+              Sign in with Google
+            </Button>
+
             <Button variant="ghost" onPress={() => setMode('password')}>Log in as vendor / delivery / admin instead</Button>
           </>
         ) : (
