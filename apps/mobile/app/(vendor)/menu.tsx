@@ -1,13 +1,14 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { ScrollView, View, StyleSheet, Switch, RefreshControl } from 'react-native';
-import { Screen, AppText, LoadingBlock, EmptyState, ErrorState } from '../../src/components/ui';
+import { Screen, AppText, LoadingBlock, EmptyState, ErrorState, Card } from '../../src/components/ui';
 import { colors, spacing } from '../../src/theme/tokens';
-import { getVendorMenu, setItemAvailability, type MenuSectionAdmin } from '../../src/features/vendor/api';
+import { getVendorMenu, setItemAvailability, toggleVendorOpenStatus, type MenuSectionAdmin } from '../../src/features/vendor/api';
 import { formatPaise } from '../../src/lib/money';
 import { ApiError } from '../../src/lib/api';
 
 export default function VendorMenuScreen() {
   const [sections, setSections] = useState<MenuSectionAdmin[]>([]);
+  const [isOpen, setIsOpen] = useState(true);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [busyItemId, setBusyItemId] = useState<string | null>(null);
@@ -17,9 +18,10 @@ export default function VendorMenuScreen() {
 
   async function loadMenu() {
     try {
-      const { sections } = await getVendorMenu();
+      const res = await getVendorMenu();
       if (isMounted.current) {
-        setSections(sections);
+        setSections(res.sections);
+        setIsOpen(res.isVendorOpen ?? true);
         setError(null);
       }
     } catch (e) {
@@ -45,6 +47,21 @@ export default function VendorMenuScreen() {
   function handleRefresh() {
     setRefreshing(true);
     loadMenu();
+  }
+
+  async function handleToggleStoreStatus(newStatus: boolean) {
+    const previousStatus = isOpen;
+    setIsOpen(newStatus);
+    setError(null);
+
+    try {
+      await toggleVendorOpenStatus(newStatus);
+    } catch (e) {
+      if (isMounted.current) {
+        setIsOpen(previousStatus);
+        setError(e instanceof ApiError ? e.message : 'Could not update stall open status.');
+      }
+    }
   }
 
   async function toggle(itemId: string, current: boolean) {
@@ -89,12 +106,30 @@ export default function VendorMenuScreen() {
   return (
     <Screen>
       <ScrollView
-        contentContainerStyle={{ padding: spacing.lg }}
+        contentContainerStyle={{ padding: spacing.lg, paddingBottom: spacing.xxl }}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={handleRefresh} />}
       >
         <AppText variant="h1" style={{ marginBottom: spacing.md }}>
-          Menu Items
+          Menu & Stall Status
         </AppText>
+
+        {/* Master Stall Status Card */}
+        <Card style={styles.storeCard}>
+          <View style={styles.row}>
+            <View style={{ flex: 1, marginRight: spacing.md }}>
+              <AppText variant="bodyBold">Stall Operating Status</AppText>
+              <AppText variant="caption" color={colors.textMuted} style={{ marginTop: 2 }}>
+                {isOpen ? 'Your cart is open for Doraha customers.' : 'Your cart is closed. No new orders accepted.'}
+              </AppText>
+            </View>
+            <Switch
+              value={isOpen}
+              onValueChange={handleToggleStoreStatus}
+              trackColor={{ true: colors.primary }}
+              thumbColor="#FFF"
+            />
+          </View>
+        </Card>
 
         {error && (
           <AppText variant="body" color={colors.danger} style={{ marginBottom: spacing.md }}>
@@ -123,6 +158,7 @@ export default function VendorMenuScreen() {
                     onValueChange={() => toggle(item.id, item.isAvailable)}
                     disabled={busyItemId === item.id}
                     trackColor={{ true: colors.primary }}
+                    thumbColor="#FFF"
                   />
                 </View>
               ))}
@@ -135,6 +171,13 @@ export default function VendorMenuScreen() {
 }
 
 const styles = StyleSheet.create({
+  storeCard: {
+    marginBottom: spacing.lg,
+    padding: spacing.md,
+    backgroundColor: '#FFF',
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
   row: {
     flexDirection: 'row',
     alignItems: 'center',
