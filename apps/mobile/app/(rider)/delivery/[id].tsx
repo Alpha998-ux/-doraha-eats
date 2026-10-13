@@ -4,6 +4,7 @@ import { useLocalSearchParams } from 'expo-router';
 import MapView, { Marker, Polyline } from 'react-native-maps';
 import * as Location from 'expo-location';
 import { Screen, AppText, Button, Card, LoadingBlock, Badge, ErrorState } from '../../../src/components/ui';
+import { CodChangeCalculator } from '../../../src/components/CodChangeCalculator';
 import { colors, spacing, radius } from '../../../src/theme/tokens';
 import { getDeliveryOrder, setDeliveryStatus } from '../../../src/features/rider/api';
 import type { OrderDetail } from '../../../src/features/orders/api';
@@ -123,7 +124,7 @@ export default function DeliveryDetailScreen() {
   if (!order) return <Screen><LoadingBlock /></Screen>;
 
   const expectedCodRupees = (order.totalPaise / 100).toFixed(2);
-  
+
   // Default drop-off fallback coordinate in Doraha if exact coords aren't attached yet
   const dropOffCoord = {
     latitude: 30.8200,
@@ -227,6 +228,11 @@ export default function DeliveryDetailScreen() {
 
         {order.status === 'ON_THE_WAY' && (
           <View style={{ gap: spacing.sm }}>
+            {/* Embedded COD Change Calculator Widget */}
+            {order.paymentMethod === 'COD' && (
+              <CodChangeCalculator totalPaise={order.totalPaise} />
+            )}
+
             {order.paymentMethod === 'COD' && (
               <TextInput
                 value={collected}
