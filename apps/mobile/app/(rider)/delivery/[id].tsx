@@ -1,6 +1,8 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { ScrollView, View, StyleSheet, Linking, TextInput, Pressable, Alert } from 'react-native';
 import { useLocalSearchParams } from 'expo-router';
+import MapView, { Marker, Polyline } from 'react-native-maps';
+import * as Location from 'expo-location';
 import { Screen, AppText, Button, Card, LoadingBlock, Badge, ErrorState } from '../../../src/components/ui';
 import { colors, spacing, radius } from '../../../src/theme/tokens';
 import { getDeliveryOrder, setDeliveryStatus } from '../../../src/features/rider/api';
@@ -16,6 +18,7 @@ export default function DeliveryDetailScreen() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [collected, setCollected] = useState('');
+  const [riderLocation, setRiderLocation] = useState<{ latitude: number; longitude: number } | null>(null);
 
   const isMounted = useRef(true);
 
@@ -37,6 +40,21 @@ export default function DeliveryDetailScreen() {
   useEffect(() => {
     isMounted.current = true;
     load();
+
+    // Track live rider location using expo-location
+    (async () => {
+      let { status } = await Location.requestForegroundPermissionsAsync();
+      if (status === 'granted') {
+        let location = await Location.getCurrentPositionAsync({});
+        if (isMounted.current) {
+          setRiderLocation({
+            latitude: location.coords.latitude,
+            longitude: location.coords.longitude,
+          });
+        }
+      }
+    })();
+
     return () => {
       isMounted.current = false;
     };
@@ -68,7 +86,6 @@ export default function DeliveryDetailScreen() {
   async function updateStatus(status: 'PICKED_UP' | 'ON_THE_WAY' | 'DELIVERED') {
     if (busy || !order) return;
 
-    // Validate COD payment amount on delivery
     if (status === 'DELIVERED' && order.paymentMethod === 'COD') {
       const expectedAmount = order.totalPaise / 100;
       const enteredAmount = parseFloat(collected.trim());
@@ -106,6 +123,12 @@ export default function DeliveryDetailScreen() {
   if (!order) return <Screen><LoadingBlock /></Screen>;
 
   const expectedCodRupees = (order.totalPaise / 100).toFixed(2);
+  
+  // Default drop-off fallback coordinate in Doraha if exact coords aren't attached yet
+  const dropOffCoord = {
+    latitude: 30.8200,
+    longitude: 76.0400,
+  };
 
   return (
     <Screen>
@@ -115,7 +138,35 @@ export default function DeliveryDetailScreen() {
           <Badge label={order.statusLabel} tone="blue" />
         </View>
 
-        <Card style={{ marginTop: spacing.lg, marginBottom: spacing.md }}>
+        {/* Live Map Preview for Rider */}
+        <Card style={{ marginTop: spacing.lg, padding: 0, overflow: 'hidden', height: 200 }}>
+          <MapView
+            style={styles.map}
+            region={
+              riderLocation
+                ? {
+                    latitude: riderLocation.latitude,
+                    longitude: riderLocation.longitude,
+                    latitudeDelta: 0.01,
+                    longitudeDelta: 0.01,
+                  }
+                : {
+                    latitude: dropOffCoord.latitude,
+                    longitude: dropOffCoord.longitude,
+                    latitudeDelta: 0.01,
+                    longitudeDelta: 0.01,
+                  }
+            }
+            showsUserLocation={true}
+          >
+            <Marker coordinate={dropOffCoord} title="Customer Drop-off" pinColor="green" />
+            {riderLocation && (
+              <Polyline coordinates={[riderLocation, dropOffCoord]} strokeColor="#E8552D" strokeWidth={3} />
+            )}
+          </MapView>
+        </Card>
+
+        <Card style={{ marginTop: spacing.md, marginBottom: spacing.md }}>
           <AppText variant="bodyBold">Pickup (Stall)</AppText>
           <AppText variant="body" style={{ marginTop: spacing.xs }}>{order.vendor.name}</AppText>
           {nav?.pickup && (
@@ -205,6 +256,10 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
+  },
+  map: {
+    width: '100%',
+    height: '100%',
   },
   input: {
     borderWidth: 1,
