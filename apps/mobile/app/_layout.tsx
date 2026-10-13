@@ -2,9 +2,11 @@ import React, { useEffect } from 'react';
 import { Stack, useRouter, useSegments } from 'expo-router';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
+import * as Notifications from 'expo-notifications';
 import { useAuthStore } from '../src/store/authStore';
 import { View, ActivityIndicator } from 'react-native';
 import { colors } from '../src/theme/tokens';
+import { registerForPushNotificationsAsync } from '../src/lib/notifications';
 
 /**
  * A single Expo binary, three role-scoped route groups. This layout branches
@@ -17,6 +19,30 @@ function RootNavigation() {
   const router = useRouter();
 
   useEffect(() => { hydrate(); }, []);
+
+  // Register push notifications and handle notification tap responses
+  useEffect(() => {
+    registerForPushNotificationsAsync().then((pushToken) => {
+      if (pushToken) {
+        console.log('Expo Push Token registered:', pushToken);
+      }
+    });
+
+    const subscription = Notifications.addNotificationResponseReceivedListener((response) => {
+      const data = response.notification.request.content.data as { orderId?: string; role?: string };
+      if (data?.orderId) {
+        if (data.role === 'VENDOR') {
+          router.push(`/(vendor)/order/${data.orderId}`);
+        } else if (data.role === 'DELIVERY') {
+          router.push(`/(rider)/${data.orderId}`);
+        } else {
+          router.push(`/(customer)/orders/${data.orderId}`);
+        }
+      }
+    });
+
+    return () => subscription.remove();
+  }, [router]);
 
   useEffect(() => {
     if (!hydrated) return;
